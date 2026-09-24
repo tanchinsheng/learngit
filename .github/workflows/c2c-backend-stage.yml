@@ -56,6 +56,7 @@ jobs:
       - name: Build backend dependency bundle
         run: |
           New-Item -ItemType Directory -Force bundle | Out-Null
+          tar -czf bundle/c2c-source.tar.gz --exclude=node_modules -C c2c .
           tar -czf bundle/c2c-windows-node_modules.tar.gz -C c2c node_modules
           Copy-Item (Get-Command node).Source bundle/node.exe
           Copy-Item c2c/pnpm-lock.yaml bundle/pnpm-lock.yaml
