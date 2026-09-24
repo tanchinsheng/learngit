@@ -60,7 +60,11 @@ jobs:
           tar -czf bundle/c2c-windows-node_modules.tar.gz -C c2c node_modules
           Copy-Item (Get-Command node).Source bundle/node.exe
           Copy-Item c2c/pnpm-lock.yaml bundle/pnpm-lock.yaml
-          @'
+          $gitRoot = Join-Path $env:ProgramFiles 'Git'
+          if (-not (Test-Path (Join-Path $gitRoot 'cmd/git.exe'))) { throw "Git for Windows not found at $gitRoot" }
+          tar -czf bundle/git-for-windows.tar.gz -C $gitRoot .
+          $gitVersion = (git --version).Trim()
+          @"
           {
             "project":"codex-with-chatgpt",
             "version":"0.1.3",
@@ -72,9 +76,10 @@ jobs:
             "rollup":"4.63.0",
             "vite":"7.3.6",
             "vitest":"3.2.7",
-            "typescript":"5.9.3"
+            "typescript":"5.9.3",
+            "git_for_windows":"$gitVersion"
           }
-          '@ | Set-Content -NoNewline bundle/dependency-manifest.json
+          "@ | Set-Content -NoNewline bundle/dependency-manifest.json
 
       - name: Download portable Wine runtime for backend
         run: |
