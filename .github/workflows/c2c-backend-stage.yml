@@ -21,9 +21,7 @@ jobs:
           git clone --depth 1 https://github.com/XiaoDuoYa/codex-with-chatgpt.git c2c
           Set-Location c2c
           $lock = (Get-FileHash pnpm-lock.yaml -Algorithm SHA256).Hash.ToLower()
-          if ($lock -ne '70df031d08ddc23feada47a7c8c820b12fb921874f2285f6a00367309d4fa5fb') {
-            throw "Lockfile hash mismatch: $lock"
-          }
+          if ($lock -ne '70df031d08ddc23feada47a7c8c820b12fb921874f2285f6a00367309d4fa5fb') { throw "Lockfile hash mismatch: $lock" }
 
       - name: Setup Node 22
         uses: actions/setup-node@v4
@@ -35,7 +33,6 @@ jobs:
           Set-Location c2c
           corepack enable
           corepack prepare pnpm@11.24.0 --activate
-          pnpm --version
           pnpm install --frozen-lockfile --config.node-linker=hoisted
 
       - name: Verify exact native dependency versions
@@ -65,23 +62,10 @@ jobs:
           tar -czf bundle/git-for-windows.tar.gz -C $gitRoot .
           $gitVersion = (git --version).Trim()
           @"
-          {
-            "project":"codex-with-chatgpt",
-            "version":"0.1.3",
-            "node":"22",
-            "arch":"x64",
-            "platform":"win32",
-            "lockfile_sha256":"70df031d08ddc23feada47a7c8c820b12fb921874f2285f6a00367309d4fa5fb",
-            "esbuild":"0.28.2",
-            "rollup":"4.63.0",
-            "vite":"7.3.6",
-            "vitest":"3.2.7",
-            "typescript":"5.9.3",
-            "git_for_windows":"$gitVersion"
-          }
+          {"project":"codex-with-chatgpt","version":"0.1.3","node_runtime":"22.23.2","arch":"x64","platform":"win32","lockfile_sha256":"70df031d08ddc23feada47a7c8c820b12fb921874f2285f6a00367309d4fa5fb","esbuild":"0.28.2","rollup":"4.63.0","vite":"7.3.6","vitest":"3.2.7","typescript":"5.9.3","git_for_windows":"$gitVersion","wine":"11.18"}
           "@ | Set-Content -NoNewline bundle/dependency-manifest.json
 
-      - name: Download portable Wine runtime for backend
+      - name: Download portable Wine runtime
         run: |
           $url = 'https://github.com/Kron4ek/Wine-Builds/releases/download/11.18/wine-11.18-amd64-wow64.tar.xz'
           $out = 'bundle/wine-11.18-amd64-wow64.tar.xz'
@@ -91,10 +75,72 @@ jobs:
           if ($actual -ne $expected) { throw "Wine checksum mismatch: $actual" }
           "$expected  wine-11.18-amd64-wow64.tar.xz" | Set-Content bundle/SHA256SUMS.wine
 
-      - name: Upload backend bundle
+      - name: Split Git runtime for Drive transfer
+        run: |
+          $src = 'bundle/git-for-windows.tar.gz'
+          $chunk = 60MB
+          $stream = [System.IO.File]::OpenRead($src)
+          try {
+            $index = 1
+            $buffer = New-Object byte[] $chunk
+            while (($read = $stream.Read($buffer,0,$buffer.Length)) -gt 0) {
+              $name = ('bundle/git-for-windows.part{0:D2}' -f $index)
+              $out = [System.IO.File]::Create($name)
+              try { $out.Write($buffer,0,$read) } finally { $out.Dispose() }
+              $index++
+            }
+          } finally { $stream.Dispose() }
+          Get-FileHash bundle/git-for-windows.tar.gz -Algorithm SHA256 | ForEach-Object { $_.Hash.ToLower() + '  git-for-windows.tar.gz' } | Set-Content bundle/SHA256SUMS.git
+          Get-ChildItem bundle/git-for-windows.part* | ForEach-Object { "$(($_ | Get-FileHash -Algorithm SHA256).Hash.ToLower())  $($_.Name)" } | Set-Content bundle/SHA256SUMS.git.parts
+
+      - name: Upload source and node_modules
         uses: actions/upload-artifact@v4
         with:
-          name: c2c-backend-wine-windows-deps
-          path: bundle/*
-          if-no-files-found: error
+          name: c2c-source-and-node-modules
+          path: |
+            bundle/c2c-source.tar.gz
+            bundle/c2c-windows-node_modules.tar.gz
+            bundle/pnpm-lock.yaml
+            bundle/dependency-manifest.json
+          retention-days: 7
+
+      - name: Upload Windows Node runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: c2c-windows-node-runtime
+          path: bundle/node.exe
+          retention-days: 7
+
+      - name: Upload Wine runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: c2c-wine-runtime
+          path: |
+            bundle/wine-11.18-amd64-wow64.tar.xz
+            bundle/SHA256SUMS.wine
+          retention-days: 7
+
+      - name: Upload Git runtime part 1
+        uses: actions/upload-artifact@v4
+        with:
+          name: c2c-git-runtime-part1
+          path: |
+            bundle/git-for-windows.part01
+            bundle/SHA256SUMS.git
+            bundle/SHA256SUMS.git.parts
+          retention-days: 7
+
+      - name: Upload Git runtime part 2
+        uses: actions/upload-artifact@v4
+        with:
+          name: c2c-git-runtime-part2
+          path: bundle/git-for-windows.part02
+          retention-days: 7
+
+      - name: Upload Git runtime part 3 if present
+        if: ${{ hashFiles('bundle/git-for-windows.part03') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: c2c-git-runtime-part3
+          path: bundle/git-for-windows.part03
           retention-days: 7
