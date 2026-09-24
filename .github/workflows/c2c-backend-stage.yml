@@ -1,0 +1,94 @@
+name: C2C backend dependency staging
+
+on:
+  push:
+    paths:
+      - '.github/workflows/c2c-backend-stage.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  stage-and-test:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Clone codex-with-chatgpt
+        run: |
+          git clone --depth 1 https://github.com/XiaoDuoYa/codex-with-chatgpt.git c2c
+          Set-Location c2c
+          $lock = (Get-FileHash pnpm-lock.yaml -Algorithm SHA256).Hash.ToLower()
+          if ($lock -ne '70df031d08ddc23feada47a7c8c820b12fb921874f2285f6a00367309d4fa5fb') {
+            throw "Lockfile hash mismatch: $lock"
+          }
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install exact dependencies
+        run: |
+          Set-Location c2c
+          corepack enable
+          corepack prepare pnpm@11.24.0 --activate
+          pnpm --version
+          pnpm install --frozen-lockfile --config.node-linker=hoisted
+
+      - name: Verify exact native dependency versions
+        run: |
+          Set-Location c2c
+          node -e "const fs=require('fs'); const req={'node_modules/@esbuild/win32-x64/package.json':'0.28.2','node_modules/@rollup/rollup-win32-x64-msvc/package.json':'4.63.0','node_modules/rollup/package.json':'4.63.0','node_modules/vite/package.json':'7.3.6','node_modules/vitest/package.json':'3.2.7','node_modules/typescript/package.json':'5.9.3'}; for(const [p,v] of Object.entries(req)){const a=JSON.parse(fs.readFileSync(p)).version;if(a!==v) throw new Error(p+': expected '+v+', got '+a)}; console.log('EXACT_DEPS_OK')"
+          if (-not (Test-Path node_modules/@esbuild/win32-x64/esbuild.exe)) { throw 'missing esbuild.exe' }
+          if (-not (Test-Path node_modules/@rollup/rollup-win32-x64-msvc/rollup.win32-x64-msvc.node)) { throw 'missing Rollup native binding' }
+
+      - name: Run C2C regression on Windows
+        run: |
+          Set-Location c2c
+          pnpm test
+          pnpm typecheck
+          pnpm build
+          node ./bin/c2c.js --version
+
+      - name: Build backend dependency bundle
+        run: |
+          New-Item -ItemType Directory -Force bundle | Out-Null
+          tar -czf bundle/c2c-windows-node_modules.tar.gz -C c2c node_modules
+          Copy-Item (Get-Command node).Source bundle/node.exe
+          Copy-Item c2c/pnpm-lock.yaml bundle/pnpm-lock.yaml
+          @'
+          {
+            "project":"codex-with-chatgpt",
+            "version":"0.1.3",
+            "node":"22",
+            "arch":"x64",
+            "platform":"win32",
+            "lockfile_sha256":"70df031d08ddc23feada47a7c8c820b12fb921874f2285f6a00367309d4fa5fb",
+            "esbuild":"0.28.2",
+            "rollup":"4.63.0",
+            "vite":"7.3.6",
+            "vitest":"3.2.7",
+            "typescript":"5.9.3"
+          }
+          '@ | Set-Content -NoNewline bundle/dependency-manifest.json
+
+      - name: Download portable Wine runtime for backend
+        run: |
+          $url = 'https://github.com/Kron4ek/Wine-Builds/releases/download/11.18/wine-11.18-amd64-wow64.tar.xz'
+          $out = 'bundle/wine-11.18-amd64-wow64.tar.xz'
+          Invoke-WebRequest -Uri $url -OutFile $out
+          $actual = (Get-FileHash $out -Algorithm SHA256).Hash.ToLower()
+          $expected = 'f899879b8c37e0b20adca19d147cf77436f3f1a37bf16d08d27fa7137a52b9ba'
+          if ($actual -ne $expected) { throw "Wine checksum mismatch: $actual" }
+          "$expected  wine-11.18-amd64-wow64.tar.xz" | Set-Content bundle/SHA256SUMS.wine
+
+      - name: Upload backend bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: c2c-backend-wine-windows-deps
+          path: bundle/*
+          if-no-files-found: error
+          retention-days: 7
